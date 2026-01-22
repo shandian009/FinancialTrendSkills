@@ -2,7 +2,6 @@ import os
 import json
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import matplotlib.pyplot as plt
 from datetime import datetime
 import anthropic
@@ -11,87 +10,99 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors
 
-# 1. 绘图函数：生成简约的高端图表
+# 1. 绘图函数
 def create_chart(symbol, name):
     df = yf.Ticker(symbol).history(period="1y")
     plt.figure(figsize=(6, 3), facecolor='#F5F5F5')
     plt.plot(df.index, df['Close'], color='#1A237E', linewidth=1.5)
     plt.fill_between(df.index, df['Close'], color='#1A237E', alpha=0.1)
-    plt.title(f"{name} ({symbol}) 1-Year Trend", fontsize=10, color='#333333')
-    plt.axis('off') # 极简风格，去掉坐标轴
-    img_path = f"data/{symbol}_chart.png"
+    plt.axis('off')
+    img_path = f"data/{symbol.replace('=', '').replace('^', '')}_chart.png"
     plt.savefig(img_path, bbox_inches='tight', dpi=100, facecolor='#F5F5F5')
     plt.close()
     return img_path
 
-# 2. 获取数据逻辑（同前，增加绘图触发）
-def get_full_data():
-    targets = {"QQQ": "科技股", "GC=F": "黄金", "SI=F": "白银", "HG=F": "高级铜", "XLU": "电网"}
+# 2. 获取数据
+def get_advanced_data():
+    targets = {
+        "QQQ": "科技股", "GC=F": "黄金", "SI=F": "白银", 
+        "HG=F": "高级铜", "XLU": "电网",
+        "DX-Y.NYB": "美元指数", "^TNX": "10年美债收益率"
+    }
     results = {}
+    print("📊 正在调取全球宏观数据...")
     for symbol, name in targets.items():
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="1y")
-        chart_path = create_chart(symbol, name)
-        results[symbol] = {
-            "name": name,
-            "price": round(df['Close'].iloc[-1], 2),
-            "chart": chart_path
-        }
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period="1y")
+            if not df.empty:
+                chart_path = create_chart(symbol, name)
+                results[symbol] = {
+                    "name": name,
+                    "price": round(df['Close'].iloc[-1], 2),
+                    "chart": chart_path,
+                    "news": [n.get('title') for n in ticker.news[:2]]
+                }
+        except: pass
     return results
 
-# 3. 生成 PDF 报告（视觉重构）
+# 3. AI 分析
+def ask_claude_pro(current_data, last_memory):
+    api_key = os.getenv("CLAUDE_API_KEY")
+    if not api_key: return "错误：未检测到 CLAUDE_API_KEY。请检查 GitHub Secrets 设置。"
+    
+    client = anthropic.Anthropic(api_key=api_key)
+    prompt = f"""
+    你是一名顶级大类资产策略师。
+    当前数据: {json.dumps(current_data, ensure_ascii=False)}
+    上期预测记录: {json.dumps(last_memory, ensure_ascii=False)}
+
+    任务：
+    1. 【对账与反思】：对比价格。如果预测不符，请结合美元和美债的变化解释。
+    2. 【大趋势分析】：分析科技股、金银铜、电网未来3个月至2年的趋势。
+    3. 【小白建议】：用极简、高端的配色语言给小白写总结。
+    """
+    message = client.messages.create(
+        model="claude-3-5-sonnet-20240620",
+        max_tokens=3000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return message.content[0].text
+
+# 4. 生成 PDF
 def generate_pro_report(ai_text, market_data):
     os.makedirs('data', exist_ok=True)
-    doc = SimpleDocTemplate("data/report.pdf", pagesize=A4, leftMargin=40, rightMargin=40)
-    
-    # 注册中文字体
+    doc = SimpleDocTemplate("data/report.pdf", pagesize=A4)
     font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
     font_name = "Helvetica"
     if os.path.exists(font_path):
         pdfmetrics.registerFont(TTFont('wqy-microhei', font_path))
         font_name = 'wqy-microhei'
-
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(name='Title', fontName=font_name, fontSize=24, textColor='#1A237E', alignment=0, spaceAfter=20)
-    sub_style = ParagraphStyle(name='Sub', fontName=font_name, fontSize=10, textColor='#666666', spaceAfter=30)
-    body_style = ParagraphStyle(name='Body', fontName=font_name, fontSize=11, leading=16, textColor='#333333')
-    section_style = ParagraphStyle(name='Section', fontName=font_name, fontSize=14, textColor='#1A237E', spaceBefore=15, spaceAfter=10, borderPadding=5)
-
-    elements = []
-    # 标题栏
-    elements.append(Paragraph("Global Market Trend Intelligence", title_style))
-    elements.append(Paragraph(f"报告编号: {datetime.now().strftime('%Y%m%d')} | 自动生成自 AI 金融分析系统", sub_style))
-
-    # AI 深度分析部分 (第一页)
-    elements.append(Paragraph("AI 深度复盘与未来趋势预测", section_style))
-    for para in ai_text.split('\n'):
-        if para.strip():
-            elements.append(Paragraph(para, body_style))
-            elements.append(Spacer(1, 8))
-
-    elements.append(Spacer(1, 20))
     
-    # 可视化数据部分
-    elements.append(Paragraph("资产走势可视化 (Asset Visuals)", section_style))
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(name='T', fontName=font_name, fontSize=20, textColor='#1A237E', spaceAfter=20)
+    body_style = ParagraphStyle(name='B', fontName=font_name, fontSize=10, leading=14)
+    
+    elements = [Paragraph("AI 金融大趋势进化分析报告", title_style)]
+    for line in ai_text.split('\n'):
+        if line.strip(): elements.append(Paragraph(line, body_style))
+    
+    elements.append(Spacer(1, 20))
     for symbol, info in market_data.items():
-        # 创建一个表格来并排显示文字和图表
-        data = [[Paragraph(f"<b>{info['name']}</b><br/>Current: ${info['price']}", body_style), Image(info['chart'], width=250, height=120)]]
-        t = Table(data, colWidths=[150, 300])
-        t.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
-        elements.append(t)
-        elements.append(Spacer(1, 10))
-
+        data = [[Paragraph(f"<b>{info['name']}</b><br/>${info['price']}", body_style), Image(info['chart'], width=200, height=80)]]
+        elements.append(Table(data, colWidths=[100, 250]))
     doc.build(elements)
 
-# 主程序逻辑
 if __name__ == "__main__":
-    # 1. 获取数据并生成图表
-    data = get_full_data()
-    # 2. 调用 Claude（逻辑同前）
-    # ai_content = ask_claude_pro(...) 
-    # 此处假设 ai_content 为 Claude 生成的文本
-    ai_content = "这里是 Claude 生成的带反省、总结和预测的长篇中文文本..."
-    # 3. 渲染高端 PDF
-    generate_pro_report(ai_content, data)
+    current_market = get_advanced_data()
+    memory_file = "data/memory.json"
+    last_mem = {}
+    if os.path.exists(memory_file):
+        with open(memory_file, 'r', encoding='utf-8') as f: last_mem = json.load(f)
+    
+    report_text = ask_claude_pro(current_market, last_mem)
+    generate_pro_report(report_text, current_market)
+    
+    with open(memory_file, 'w', encoding='utf-8') as f:
+        json.dump({"prices": {s: d['price'] for s, d in current_market.items()}}, f)
