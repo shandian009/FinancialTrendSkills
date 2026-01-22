@@ -1,130 +1,47 @@
-import os
-import json
-import yfinance as yf
-import pandas as pd
-import matplotlib.pyplot as plt
-from openai import OpenAI
-from datetime import datetime
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+name: 金融趋势自动分析
 
-# 1. 绘图函数 (保持黑金专业风格)
-def create_chart(symbol, name):
-    df = yf.Ticker(symbol).history(period="1y")
-    plt.figure(figsize=(7, 3), facecolor='#FFFFFF')
-    # 价格线
-    plt.plot(df.index, df['Close'], color='#001F3F', linewidth=1.5)
-    # 增加50日均线看大趋势
-    df['MA50'] = df['Close'].rolling(window=50).mean()
-    plt.plot(df.index, df['MA50'], color='#D4AF37', linestyle='--', linewidth=0.8, alpha=0.7)
-    
-    plt.fill_between(df.index, df['Close'], color='#001F3F', alpha=0.03)
-    plt.axis('off')
-    
-    img_path = f"data/{symbol.replace('=', '').replace('^', '')}_chart.png"
-    plt.savefig(img_path, bbox_inches='tight', dpi=120)
-    plt.close()
-    return img_path
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
 
-# 2. 数据调取
-def get_market_data():
-    targets = {
-        "QQQ": "科技指数", "GC=F": "黄金", "SI=F": "白银", 
-        "HG=F": "铜(基建指标)", "XLU": "电网板块",
-        "DX-Y.NYB": "美元指数", "^TNX": "10年美债收益率"
-    }
-    results = {}
-    os.makedirs('data', exist_ok=True)
-    for symbol, name in targets.items():
-        try:
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period="1y")
-            if not df.empty:
-                chart_path = create_chart(symbol, name)
-                results[symbol] = {
-                    "name": name,
-                    "price": round(df['Close'].iloc[-1], 2),
-                    "chart": chart_path
-                }
-        except: pass
-    return results
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - uses: actions/checkout@v4
 
-# 3. DeepSeek 分析核心 (使用 OpenAI SDK 兼容调用)
-def ask_deepseek_analysis(current_data, last_memory):
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    # 初始化 DeepSeek 客户端
-    client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-    
-    prompt = f"""
-    你是一名全球顶尖的宏观策略分析师。
-    当前数据: {json.dumps(current_data, ensure_ascii=False)}
-    历史记忆: {json.dumps(last_memory, ensure_ascii=False)}
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-    任务要求：
-    1. 【误差溯源】：复盘上期预测。若实际走势不符，请分析美元指数或美债收益率的超预期变动。
-    2. 【联动推演】：解释科技股与大宗商品在当前利率环境下的逻辑冲突或共振。
-    3. 【跨时空预测】：给出 3个月、1年、2年的大趋势预判。
-    4. 【操作寄语】：为小白写一段直击本质的高端总结。
-    """
+      - name: 安装字体
+        run: sudo apt-get update && sudo apt-get install -y fonts-wqy-microhei
 
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat", # 使用 DeepSeek-V3
-            messages=[
-                {"role": "system", "content": "你是一个严谨且犀利的金融研报专家"},
-                {"role": "user", "content": prompt}
-            ],
-            stream=False
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"DeepSeek 调用失败: {str(e)}"
+      - name: 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance reportlab requests openai matplotlib pandas
 
-# 4. 生成 PDF
-def generate_pdf(ai_text, market_data):
-    doc = SimpleDocTemplate("data/report.pdf", pagesize=A4)
-    font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
-    font_name = "Helvetica"
-    if os.path.exists(font_path):
-        pdfmetrics.registerFont(TTFont('wqy-microhei', font_path))
-        font_name = 'wqy-microhei'
-    
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(name='T', fontName=font_name, fontSize=22, textColor='#001F3F', spaceAfter=20)
-    body_style = ParagraphStyle(name='B', fontName=font_name, fontSize=10, leading=15)
+      - name: 运行分析脚本
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python src/main.py
 
-    elements = [Paragraph("DeepSeek 驱动：全球大趋势进化分析", title_style)]
-    elements.append(Paragraph(f"生成日期: {datetime.now().strftime('%Y-%m-%d')}", body_style))
-    elements.append(Spacer(1, 20))
-    
-    for line in ai_text.split('\n'):
-        if line.strip(): elements.append(Paragraph(line, body_style))
-    
-    elements.append(Spacer(1, 25))
-    for symbol, info in market_data.items():
-        data = [[Paragraph(f"<b>{info['name']}</b><br/>${info['price']}", body_style), Image(info['chart'], width=220, height=85)]]
-        elements.append(Table(data, colWidths=[120, 260]))
-    
-    doc.build(elements)
+      - name: 保存记忆并推送
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/memory.json || echo ""
+          git commit -m "update memory [skip ci]" || echo ""
+          git push
 
-if __name__ == "__main__":
-    market_data = get_market_data()
-    
-    # 读取记忆
-    mem_file = "data/memory.json"
-    last_mem = {}
-    if os.path.exists(mem_file):
-        with open(mem_file, 'r', encoding='utf-8') as f: last_mem = json.load(f)
-    
-    # 运行 DeepSeek
-    report_text = ask_deepseek_analysis(market_data, last_mem)
-    
-    # 生成报告
-    generate_pdf(report_text, market_data)
-    
-    # 更新记忆
-    with open(mem_file, 'w', encoding='utf-8') as f:
-        json.dump({"prices": {s: d['price'] for s, d in market_data.items()}}, f)
+      - name: 上传 PDF 报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: financial-report
+          path: data/report.pdf
