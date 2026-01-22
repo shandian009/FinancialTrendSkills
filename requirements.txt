@@ -2,5 +2,6 @@ yfinance
 reportlab
 requests
 anthropic
-pandas_ta
+pandas-ta
 matplotlib
+pandas
