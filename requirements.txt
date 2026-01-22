@@ -1,3 +1,6 @@
 yfinance
 reportlab
 requests
+anthropic
+pandas_ta
+matplotlib
