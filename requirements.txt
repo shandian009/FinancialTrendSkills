@@ -1,7 +1,7 @@
 yfinance
 reportlab
 requests
-anthropic
+anthropic==0.42.0
 pandas-ta
 matplotlib
 pandas
